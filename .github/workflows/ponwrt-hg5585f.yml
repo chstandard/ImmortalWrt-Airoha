@@ -124,19 +124,19 @@ jobs:
 
           lines = open(".config", encoding="utf-8").read().splitlines()
 
-          # 1) 只保留所选机型：把 configs/an7581.config 里 5 个机型的开关全清掉再指定一个。
-          #    保留 CONFIG_TARGET_MULTI_PROFILE=y——airoha 是 multi-profile target，
-          #    去掉它 kconfig 会认不出 DEVICE_xxx 这个 profile。
-          keep = []
-          for ln in lines:
-              if re.match(r'^CONFIG_TARGET_airoha_an7581_DEVICE_', ln):
-                  continue
-              if re.match(r'^CONFIG_TARGET_DEVICE_(PACKAGES_)?airoha_an7581_DEVICE_', ln):
-                  continue
-              keep.append(ln)
-          # 不要再追加 CONFIG_TARGET_MULTI_PROFILE：它属于 choice，重复写会触发
-          # "override: TARGET_MULTI_PROFILE changes choice state"，底稿里已经有一份。
-          keep.append("CONFIG_TARGET_airoha_an7581_DEVICE_%s=y" % dev)
+          # 1) 机型：底稿 configs/an7581.config 是作者验证过的 multi-profile 配置，
+          #    默认 5 个机型全选（hg5382a / hg5585f-ct / -ct-usb-sfp / -cu / -cu-usb-sfp）。
+          #    之前试过"删掉其余 4 个只留目标机型"，kconfig 在同一轮里既保留了
+          #    CONFIG_TARGET_DEVICE_* 又重排 choice，defconfig 后目标机型反而没被选中。
+          #    多编的那 4 个机型只是多几份 rootfs（内核与软件包是共用的），
+          #    比跟 kconfig 的 choice 语义较劲划算得多 —— 产物只上传我们这台机器的。
+          keep = list(lines)
+          if not any(re.match(r'^CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_%s=y$'
+                              % re.escape(dev), ln) for ln in keep):
+              # 底稿没带这个机型时才显式打开（正常情况用不到）
+              keep = [ln for ln in keep
+                      if not re.match(r'^CONFIG_TARGET_airoha_an7581_DEVICE_%s=' % re.escape(dev), ln)]
+              keep.append("CONFIG_TARGET_airoha_an7581_DEVICE_%s=y" % dev)
 
           # 2) 附加软件包。先删掉同名旧行，再由 defconfig 决定是真选中还是被丢掉。
           names = [p.lstrip("-") for p in extra]
@@ -233,27 +233,34 @@ jobs:
       - name: Collect(整理产物)
         run: |
           cd "$OPENWRT/bin/targets/$TARGET_DIR"
-          ls -la
-          echo "--- 关键文件 ---"
-          ls -la ./*.itb ./*.bin ./*.fip ./sha256sums ./profiles.json 2>/dev/null || true
-          {
-            echo "### PonWrt · ${DEVICE}"
-            echo ''
-            echo '```'
-            ls -lh ./*.itb ./*.bin ./*.fip 2>/dev/null | awk '{print $5"\t"$9}'
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          # 底稿会把 5 个机型全编出来。这里按 profile 名挑出本次要的那台，
+          # 再排掉 -usb-sfp 变体（文件名里 hg5585f-ct 是 hg5585f-ct-usb-sfp 的子串，必须显式排除）。
+          OUT="$GITHUB_WORKSPACE/out"
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          shopt -s nullglob
+          n=0
+          for f in *"${DEVICE}"*; do
+            case "$f" in *usb-sfp*) continue ;; esac
+            cp -v "$f" "$OUT/"; n=$((n+1))
+          done
+          if [ "$n" -eq 0 ]; then
+            echo "::error::没有匹配 ${DEVICE} 的产物，编译可能没覆盖这个机型"
+            ls -la
+            exit 1
+          fi
+          # sha256sums / profiles.json 是整包级别的，重新为挑出来的文件生成一份
+          ( cd "$OUT" && sha256sum * > sha256sums )
+          cp -v profiles.json "$OUT/" 2>/dev/null || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          ls -lh "$OUT" | awk '{print $5"\t"$9}' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          ls -lh "$OUT"
 
       - name: Upload Artifact(上传 Artifact)
         uses: actions/upload-artifact@v7
         with:
           name: ponwrt-${{ inputs.device }}-${{ github.run_number }}
-          path: |
-            openwrt/bin/targets/airoha/an7581/*.itb
-            openwrt/bin/targets/airoha/an7581/*.bin
-            openwrt/bin/targets/airoha/an7581/*.fip
-            openwrt/bin/targets/airoha/an7581/sha256sums
-            openwrt/bin/targets/airoha/an7581/profiles.json
+          path: out/*
           if-no-files-found: error
 
       - name: Publish Release(发布)
@@ -261,8 +268,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cd "$OPENWRT/bin/targets/$TARGET_DIR"
+          cd "$GITHUB_WORKSPACE/out"
           TAG="PonWrt-${DEVICE}-$(date +%Y%m%d)-${GITHUB_RUN_NUMBER}"
+          shopt -s nullglob
+          files=( ./* )
+          [ ${#files[@]} -gt 0 ] || { echo "::error::没有可发布的文件"; exit 1; }
+          printf '发布文件:\n'; printf '  %s\n' "${files[@]}"
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$TAG" \
@@ -271,5 +282,5 @@ jobs:
           - 附加包：\`${EXTRA_PACKAGES}\`
           - 内核 BPF：${ENABLE_BPF}
           - 源码：${SOURCE_REPO} ${SOURCE_BRANCH}" \
-            ./*.itb ./*.bin ./*.fip ./sha256sums ./profiles.json
+            "${files[@]}"
           echo "已发布: $TAG"

@@ -13,16 +13,18 @@ run-name: "PonWrt · ${{ inputs.device }} · ${{ inputs.enable_bpf && 'BPF 开' 
 on:
   workflow_dispatch:
     inputs:
+      # 这里必须写 OpenWrt 的 profile 全名（image/an7581.mk 里的 Device/xxx），
+      # 少写 fiberhome_ 前缀 kconfig 会当成不存在的符号静默丢掉，defconfig 后一个机型都选不中。
       device:
-        description: '机型。hg5585f-ct 是电信版（当前设备就是它）；-usb-sfp 是插 USB 光模块的变体；hg5585f-cu 是联通版'
+        description: '机型 profile。fiberhome_hg5585f-ct 是电信版（当前设备就是它）；-usb-sfp 是插 USB 光模块的变体；_cu 是联通版'
         required: true
-        default: 'hg5585f-ct'
+        default: 'fiberhome_hg5585f-ct'
         type: choice
         options:
-          - hg5585f-ct
-          - hg5585f-ct-usb-sfp
-          - hg5585f-cu
-          - hg5382a
+          - fiberhome_hg5585f-ct
+          - fiberhome_hg5585f-ct-usb-sfp
+          - fiberhome_hg5585f-cu
+          - fiberhome_hg5382a
       extra_packages:
         description: '附加软件包（空格分隔；包名前加 - 表示移除）'
         required: false
@@ -132,7 +134,8 @@ jobs:
               if re.match(r'^CONFIG_TARGET_DEVICE_(PACKAGES_)?airoha_an7581_DEVICE_', ln):
                   continue
               keep.append(ln)
-          keep.append("CONFIG_TARGET_MULTI_PROFILE=y")
+          # 不要再追加 CONFIG_TARGET_MULTI_PROFILE：它属于 choice，重复写会触发
+          # "override: TARGET_MULTI_PROFILE changes choice state"，底稿里已经有一份。
           keep.append("CONFIG_TARGET_airoha_an7581_DEVICE_%s=y" % dev)
 
           # 2) 附加软件包。先删掉同名旧行，再由 defconfig 决定是真选中还是被丢掉。
@@ -173,7 +176,12 @@ jobs:
 
           echo "--- 机型 ---"
           grep -q "^CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_${DEVICE}=y" .config \
-            || { echo "::error::defconfig 后 ${DEVICE} 没被选中，检查机型名是否在 image/an7581.mk 里"; exit 1; }
+            || {
+                 echo "::error::defconfig 后 ${DEVICE} 没被选中"
+                 echo "可选 profile："
+                 grep -oE 'Device/[a-z0-9_-]+' target/linux/airoha/image/an7581.mk | sed 's|Device/|  |'
+                 exit 1
+               }
           echo "已选定机型: ${DEVICE}"
 
           echo "--- 附加软件包 ---"

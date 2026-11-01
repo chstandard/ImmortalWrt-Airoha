@@ -37,6 +37,14 @@ define Package/lucky/description
   注意：本包内置的是官方 arm64 静态二进制，只适用于 aarch64 目标。
 endef
 
+# 官方 tar.gz 是平铺结构（根目录直接是 lucky / LICENSE / scripts/），
+# 没有 name-version 这层壳。默认解包会 strip 掉第一段路径，
+# 结果 $PKG_BUILD_DIR 里只剩 scripts/，二进制丢了。显式解，不做 strip。
+define Build/Prepare
+	mkdir -p $(PKG_BUILD_DIR)
+	tar -xzf $(DL_DIR)/$(PKG_SOURCE) -C $(PKG_BUILD_DIR)
+endef
+
 # 预编译二进制，没有源码可编
 define Build/Compile
 endef

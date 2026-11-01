@@ -94,7 +94,10 @@ env:
 jobs:
   Build:
     name: ${{ matrix.device }}
-    runs-on: ubuntu-latest
+    # 钉死 24.04（noble）：Ubuntu 26.04 上线后 ubuntu-latest 已切到 26.04，
+    # 而 immortalwrt 的 init_build_environment.sh 只认 focal/jammy/noble，
+    # 遇到 26.04 会直接 "[ERROR] Unsupported OS" 退出，编译还没开始就挂了。
+    runs-on: ubuntu-24.04
     # 选 all 时每个机型一个 job 并行编；单选时矩阵里只有这一个机型。
     # TF、ZN504 与 HG5382A 只有 ubi 布局，stock 下的 all 不带它们。
     # 一个机型失败不取消其他机型。

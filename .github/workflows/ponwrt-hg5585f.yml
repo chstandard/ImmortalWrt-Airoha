@@ -145,6 +145,23 @@ jobs:
           open(p, "w", encoding="utf-8").write(src)
           print("hg5585f-common DEVICE_PACKAGES 已去掉无线：")
           print([ln for ln in body.splitlines() if "DEVICE_PACKAGES" in ln][0])
+
+          # PPE 计数统计（ppe0/ppe1 的 packets）。这个符号在 config-6.18 里被显式
+          # 写成 "# ... is not set"，而写死的否定项会盖掉 .config 里的
+          # CONFIG_KERNEL_NET_AIROHA_FLOW_STATS=y，defconfig 必然把它裁回 n。
+          # 所以只能改目标的内核配置片段本身。
+          kp = "target/linux/airoha/an7581/config-6.18"
+          ksrc = open(kp, encoding="utf-8").read()
+          if "CONFIG_NET_AIROHA_FLOW_STATS=y" in ksrc:
+              print("config-6.18: FLOW_STATS 已是 y，跳过")
+          else:
+              ksrc, n = re.subn(r"^# CONFIG_NET_AIROHA_FLOW_STATS is not set$",
+                                "CONFIG_NET_AIROHA_FLOW_STATS=y", ksrc, flags=re.M)
+              if n == 0:
+                  print("::error::config-6.18 里找不到 FLOW_STATS 行，上游可能已改")
+                  sys.exit(1)
+              open(kp, "w", encoding="utf-8").write(ksrc)
+              print("config-6.18: NET_AIROHA_FLOW_STATS -> y")
           PY
 
       - name: Overlay Files(首次启动即生效的配置)
@@ -224,13 +241,13 @@ jobs:
                   "CONFIG_KERNEL_XDP_SOCKETS=y",
               ]
 
-          # 4) zram swap 与 PPE 统计
+          # 4) zram swap
           #    CONFIG_ZRAM / CONFIG_ZSMALLOC 由 kmod-zram 的 KCONFIG 带入（=m），
           #    这里只选压缩后端与默认算法 lz4：没有后端时 zram-swap 会静默回落到 lzo。
-          #    FLOW_STATS 打开后 ppe0/ppe1 才有 packets 计数（基线里是 not set）。
+          #    PPE 的 FLOW_STATS 不放这里：config-6.18 里写死的 not set 会盖掉
+          #    CONFIG_KERNEL_*，改由 Patch Target 直接改内核配置片段。
           for sym in ("CONFIG_KERNEL_ZRAM_BACKEND_LZ4",
-                      "CONFIG_KERNEL_ZRAM_DEF_COMP_LZ4",
-                      "CONFIG_KERNEL_NET_AIROHA_FLOW_STATS"):
+                      "CONFIG_KERNEL_ZRAM_DEF_COMP_LZ4"):
               keep = [ln for ln in keep
                       if not re.match(r'^(# )?%s(=| is not set)' % re.escape(sym), ln)]
               keep.append(sym + "=y")
@@ -294,8 +311,8 @@ jobs:
             || { echo "::error::zram-swap 没进配置，开机会没有 swap"; exit 1; }
           grep -q "^CONFIG_KERNEL_ZRAM_BACKEND_LZ4=y$" .config \
             || { echo "::error::lz4 后端没打开，zram 会回落到 lzo"; exit 1; }
-          grep -q "^CONFIG_KERNEL_NET_AIROHA_FLOW_STATS=y$" .config \
-            || { echo "::error::FLOW_STATS 没打开，ppe0/ppe1 计数仍是 0"; exit 1; }
+          grep -q "^CONFIG_NET_AIROHA_FLOW_STATS=y$" target/linux/airoha/an7581/config-6.18 \
+            || { echo "::error::config-6.18 里 FLOW_STATS 没打开，ppe0/ppe1 计数仍是 0"; exit 1; }
           echo "zram 与 PPE 统计就位"
 
       - name: Download Sources(预下载源码包)

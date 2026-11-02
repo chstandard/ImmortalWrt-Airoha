@@ -28,7 +28,7 @@ on:
       extra_packages:
         description: '附加软件包（空格分隔；包名前加 - 表示移除）'
         required: false
-        default: 'luci-app-passwall luci-i18n-passwall-zh-cn daed daed-geoip daed-geosite luci-app-daed luci-i18n-daed-zh-cn lucky luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts ddns-scripts-services ddns-scripts-aliyun ddns-scripts-dnspod-v3 ddns-scripts-cloudflare ddns-scripts-cnkuai ddns-scripts-huaweicloud'
+        default: 'luci-app-passwall luci-i18n-passwall-zh-cn daed daed-geoip daed-geosite luci-app-daed luci-i18n-daed-zh-cn lucky luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts ddns-scripts-services ddns-scripts-aliyun ddns-scripts-dnspod-v3 ddns-scripts-cloudflare ddns-scripts-cnkuai ddns-scripts-huaweicloud zram-swap kmod-zram'
         type: string
       enable_bpf:
         description: '为 dae/daed 打开内核 BTF / BPF_EVENTS / XDP_SOCKETS。会额外编 dwarves(pahole)，约多 10-20 分钟'
@@ -99,6 +99,67 @@ jobs:
           echo "源码 HEAD : $(git log -1 --format='%h %ad %s' --date=short)"
           echo "OPENWRT=$PWD" >> "$GITHUB_ENV"
 
+      - name: Patch Target(去无线、开 PPE 统计)
+        run: |
+          cd "$OPENWRT"
+          python3 - <<'PY'
+          import re, sys
+
+          p = "target/linux/airoha/image/an7581.mk"
+          src = open(p, encoding="utf-8").read()
+
+          # 这台 5382A 没有射频硬件（/sys/class/ieee80211 为空、ip link 无 wlan），
+          # 刷的 5585F 固件却在 DEVICE_PACKAGES 里带 wpad-openssl + kmod-mt7915e
+          # + kmod-mt7916-firmware：编译进去后 hostapd/wpa_supplicant 空转，
+          # 实测白占约 12MB 内存。只动 hg5585f-common 这一块，其余机型不受影响。
+          m = re.search(r"(define Device/fiberhome_hg5585f-common\n)(.*?)(\nendef)", src, re.S)
+          if not m:
+              print("::error::an7581.mk 里找不到 fiberhome_hg5585f-common 段")
+              sys.exit(1)
+          head, body, tail = m.groups()
+
+          dm = re.search(r"(  DEVICE_PACKAGES :=)((?:[^\n]*\\\n)*[^\n]*)", body)
+          if not dm:
+              print("::error::该机型段里找不到 DEVICE_PACKAGES")
+              sys.exit(1)
+
+          # 跨行的逻辑行先拼成一行再按词剔除，避免留下只有续行符的空行把 make 断链
+          words = dm.group(2).replace("\\\n", " ").split()
+          drop = {"wpad-openssl", "kmod-mt7915e", "kmod-mt7916-firmware"}
+          kept = [w for w in words if w not in drop]
+          if len(kept) == len(words):
+              print("::warning::DEVICE_PACKAGES 里没找到无线包，可能上游已改")
+          new_assign = dm.group(1) + " " + " ".join(kept) + " \\"
+          # 末尾续行符去掉：变回单行
+          new_assign = new_assign.rstrip(" \\")
+          body = body[:dm.start()] + new_assign + body[dm.end():]
+          src = src[:m.start()] + head + body + tail + src[m.end():]
+
+          if "wpad-openssl" in body or "kmod-mt7915e" in body:
+              print("::error::无线包没删干净，检查 an7581.mk")
+              sys.exit(1)
+          if "AIROHA_USB_STORAGE_PACKAGES" not in body:
+              print("::error::DEVICE_PACKAGES 拼坏了，USB 存储包丢了")
+              sys.exit(1)
+
+          open(p, "w", encoding="utf-8").write(src)
+          print("hg5585f-common DEVICE_PACKAGES 已去掉无线：")
+          print([ln for ln in body.splitlines() if "DEVICE_PACKAGES" in ln][0])
+          PY
+
+      - name: Overlay Files(首次启动即生效的配置)
+        run: |
+          cd "$OPENWRT"
+          # 仓库里的 files/ 直接叠加到 openwrt/files/，由 image 构建复制进 rootfs：
+          #   etc/sysctl.conf                    千兆 WAN 稳态（16MB 缓冲 / conntrack 8192）
+          #   etc/uci-defaults/96-network-tuning 开硬件 offload、关 fullcone
+          #   etc/uci-defaults/97-zram-lz4       96MB / lz4 / prio 100
+          #   etc/uci-defaults/98-wireless-off   无射频硬件，radio 全部 disabled
+          mkdir -p files
+          cp -a "$GITHUB_WORKSPACE/files/." files/
+          echo "已注入文件："
+          find files -type f | sort
+
       - name: Install Feeds(装 feeds 与本地 lucky 源)
         run: |
           cd "$OPENWRT"
@@ -163,6 +224,17 @@ jobs:
                   "CONFIG_KERNEL_XDP_SOCKETS=y",
               ]
 
+          # 4) zram swap 与 PPE 统计
+          #    CONFIG_ZRAM / CONFIG_ZSMALLOC 由 kmod-zram 的 KCONFIG 带入（=m），
+          #    这里只选压缩后端与默认算法 lz4：没有后端时 zram-swap 会静默回落到 lzo。
+          #    FLOW_STATS 打开后 ppe0/ppe1 才有 packets 计数（基线里是 not set）。
+          for sym in ("CONFIG_KERNEL_ZRAM_BACKEND_LZ4",
+                      "CONFIG_KERNEL_ZRAM_DEF_COMP_LZ4",
+                      "CONFIG_KERNEL_NET_AIROHA_FLOW_STATS"):
+              keep = [ln for ln in keep
+                      if not re.match(r'^(# )?%s(=| is not set)' % re.escape(sym), ln)]
+              keep.append(sym + "=y")
+
           open(".config", "w", encoding="utf-8").write("\n".join(keep) + "\n")
           print("机型      : %s" % dev)
           print("附加包    : %s" % (" ".join(extra) or "(无)"))
@@ -214,6 +286,17 @@ jobs:
               || { echo "::error::DEBUG_INFO_REDUCED 没关掉，BTF 会被 Kconfig 依赖裁掉"; exit 1; }
             echo "内核 BPF 选项全部就位"
           fi
+
+          echo "--- zram / PPE 统计 ---"
+          grep -qE "^CONFIG_PACKAGE_kmod-zram=(y|m)$" .config \
+            || { echo "::error::kmod-zram 没进配置，开机没有 zram 设备"; exit 1; }
+          grep -q "^CONFIG_PACKAGE_zram-swap=y$" .config \
+            || { echo "::error::zram-swap 没进配置，开机会没有 swap"; exit 1; }
+          grep -q "^CONFIG_KERNEL_ZRAM_BACKEND_LZ4=y$" .config \
+            || { echo "::error::lz4 后端没打开，zram 会回落到 lzo"; exit 1; }
+          grep -q "^CONFIG_KERNEL_NET_AIROHA_FLOW_STATS=y$" .config \
+            || { echo "::error::FLOW_STATS 没打开，ppe0/ppe1 计数仍是 0"; exit 1; }
+          echo "zram 与 PPE 统计就位"
 
       - name: Download Sources(预下载源码包)
         run: |

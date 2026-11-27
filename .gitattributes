@@ -7,6 +7,9 @@ packages/** text eol=lf
 scripts/** text eol=lf
 *.sh text eol=lf
 
+# 温度 RPC 片段会被注入 luci 的 ucode 源码，必须 LF
+config/temperature-rpc.uc text eol=lf
+
 # 补丁文件保持原样，任何转换都可能让它打不上
 *.patch -text
 

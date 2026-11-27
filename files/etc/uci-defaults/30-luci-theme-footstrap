@@ -1,0 +1,7 @@
+#!/bin/sh
+# Footstrap 第一次启动即生效：主题的 post-install 钩子在拼装 rootfs 时被跳过，
+# 这里在首次启动时把默认主题指到 Footstrap。用户之后在 LuCI 里改的主题不受影响。
+uci -q set luci.main.mediaurlbase='/luci-static/footstrap'
+uci -q set luci.themes.Footstrap='/luci-static/footstrap'
+uci -q commit luci
+exit 0

@@ -28,7 +28,7 @@ on:
       extra_packages:
         description: '附加软件包（空格分隔；包名前加 - 表示移除）'
         required: false
-        default: 'luci-app-passwall luci-i18n-passwall-zh-cn daed daed-geoip daed-geosite luci-app-daed luci-i18n-daed-zh-cn lucky luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts ddns-scripts-services ddns-scripts-aliyun ddns-scripts-dnspod-v3 ddns-scripts-cloudflare ddns-scripts-cnkuai ddns-scripts-huaweicloud zram-swap kmod-zram'
+        default: 'luci-app-passwall luci-i18n-passwall-zh-cn daed daed-geoip daed-geosite luci-app-daed luci-i18n-daed-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts ddns-scripts-services ddns-scripts-aliyun ddns-scripts-dnspod-v3 ddns-scripts-cloudflare ddns-scripts-cnkuai ddns-scripts-huaweicloud luci-app-autoreboot luci-theme-footstrap autocore zram-swap kmod-zram'
         type: string
       enable_bpf:
         description: '为 dae/daed 打开内核 BTF / BPF_EVENTS / XDP_SOCKETS。会额外编 dwarves(pahole)，约多 10-20 分钟'
@@ -66,7 +66,7 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - name: Checkout(取本仓库的 lucky 包)
+      - name: Checkout(取本仓库)
         uses: actions/checkout@v7
 
       - name: Free Disk Space(腾空间)
@@ -169,6 +169,7 @@ jobs:
           cd "$OPENWRT"
           # 仓库里的 files/ 直接叠加到 openwrt/files/，由 image 构建复制进 rootfs：
           #   etc/sysctl.conf                    千兆 WAN 稳态（16MB 缓冲 / conntrack 8192）
+          #   etc/uci-defaults/30-luci-theme-footstrap  首次启动把默认主题设为 Footstrap
           #   etc/uci-defaults/96-network-tuning 开硬件 offload、关 fullcone
           #   etc/uci-defaults/97-zram-lz4       96MB / lz4 / prio 100
           #   etc/uci-defaults/98-wireless-off   无射频硬件，radio 全部 disabled
@@ -177,17 +178,41 @@ jobs:
           echo "已注入文件："
           find files -type f | sort
 
-      - name: Install Feeds(装 feeds 与本地 lucky 源)
+      - name: Install Feeds(装 feeds + 第三方包)
         run: |
           cd "$OPENWRT"
-          # lucky 不在任何公共 feed 里，用 src-link 把本仓库的 packages/ 挂进去
-          echo "src-link lucky $GITHUB_WORKSPACE/packages" >> feeds.conf.default
+          # passwall / daed / ddns / autoreboot / autocore 都在 ponwrt 自带公共 feed。
+          # 只有 Footstrap 主题不在任何 feed，单独 clone 到 package/（参考 Kahen CI）。
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-          # 确认 lucky 确实被 feed 收录了，否则后面 defconfig 会静默丢掉
-          ./scripts/feeds list -n | grep -qx lucky \
-            || { echo "::error::feeds 里找不到 lucky，检查 packages/lucky/Makefile"; exit 1; }
-          echo "lucky 已进入 feed"
+
+          echo "--- 导入 Footstrap 主题 ---"
+          tmp="$(mktemp -d)"
+          git clone --depth=1 --single-branch --branch main \
+            https://github.com/VizzleTF/luci-theme-footstrap.git "$tmp/footstrap"
+          [ -f "$tmp/footstrap/luci-theme-footstrap/Makefile" ] \
+            || { echo "::error::luci-theme-footstrap Makefile 找不到，上游结构变了"; exit 1; }
+          rm -rf package/luci-theme-footstrap
+          cp -a "$tmp/footstrap/luci-theme-footstrap" package/luci-theme-footstrap
+          echo "Footstrap commit: $(git -C "$tmp/footstrap" rev-parse HEAD)"
+          rm -rf "$tmp"
+
+          # autoreboot 已在 immortalwrt/luci feed 里（feeds install -a 已收录），
+          # 这里确认它和 Footstrap 都进 feed，否则 defconfig 会静默丢掉这两个包。
+          for p in luci-app-autoreboot luci-theme-footstrap autocore; do
+            find package -maxdepth 4 -type d -name "$p" | grep -q . \
+              || { echo "::error::feeds/package 里找不到 $p"; exit 1; }
+            echo "  OK $p"
+          done
+
+      - name: Integrate Temperature(接入温度显示链路)
+        run: |
+          cd "$OPENWRT"
+          # 改源码里的 autocore Makefile / luci RPC / 概览页 / ACL / 中文词条。
+          # 上游文件结构一变脚本就 fail，避免静默产出缺链路的固件。
+          python3 "$GITHUB_WORKSPACE/scripts/integrate-temperature.py" "$OPENWRT"
+          # 改了包 Makefile 和 feed 文件，强制重新生成元数据
+          rm -rf ./tmp
 
       - name: Generate Config(生成 .config)
         run: |
@@ -315,6 +340,21 @@ jobs:
             || { echo "::error::config-6.18 里 FLOW_STATS 没打开，ppe0/ppe1 计数仍是 0"; exit 1; }
           echo "zram 与 PPE 统计就位"
 
+          echo "--- 温度显示链路(源码) ---"
+          grep -q "airoha%" package/emortal/autocore/Makefile \
+            || { echo "::error::autocore 没给 airoha 装 tempinfo"; exit 1; }
+          grep -q "getTempInfo" feeds/luci/modules/luci-base/root/usr/share/rpcd/ucode/luci \
+            || { echo "::error::luci.getTempInfo 没接入"; exit 1; }
+          grep -q "getTempInfo" feeds/luci/modules/luci-mod-status/root/usr/share/rpcd/acl.d/luci-mod-status-index.json \
+            || { echo "::error::温度 ACL 没放行 getTempInfo"; exit 1; }
+          grep -q "Unavailable" feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js \
+            || { echo "::error::概览页温度行缺无读数兜底"; exit 1; }
+          grep -q "CONFIG_PACKAGE_luci-theme-footstrap=y" .config \
+            || { echo "::error::Footstrap 主题没进配置"; exit 1; }
+          grep -q "CONFIG_PACKAGE_luci-app-autoreboot=y" .config \
+            || { echo "::error::自动重启插件没进配置"; exit 1; }
+          echo "温度链路 / Footstrap / 自动重启 已就位"
+
       - name: Download Sources(预下载源码包)
         run: |
           cd "$OPENWRT"
@@ -351,6 +391,14 @@ jobs:
           # sha256sums / profiles.json 是整包级别的，重新为挑出来的文件生成一份
           ( cd "$OUT" && sha256sum * > sha256sums )
           cp -v profiles.json "$OUT/" 2>/dev/null || true
+
+          # 逐个检查最终 sysupgrade 镜像里的整条温度链路 + Footstrap/自动重启/autocore。
+          # 从 FIT/tar 里取出真实 squashfs，确认 tempinfo 可执行、RPC/页面/ACL 接通、
+          # 关键包真在包数据库里；任一缺失就不许发布。
+          echo "--- 镜像内温度链路校验 ---"
+          python3 "$GITHUB_WORKSPACE/scripts/verify-temperature-image.py" \
+            "$OUT"/*-squashfs-sysupgrade.itb
+
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           ls -lh "$OUT" | awk '{print $5"\t"$9}' >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
@@ -381,6 +429,8 @@ jobs:
           - 机型：\`${DEVICE}\`
           - 附加包：\`${EXTRA_PACKAGES}\`
           - 内核 BPF：${ENABLE_BPF}
+          - 显示：Footstrap 主题 + 系统概览实时温度（无读数为"不可用"）+ 定时重启插件
+          - 校验：镜像内温度链路 + 关键包已逐个核对
           - 源码：${SOURCE_REPO} ${SOURCE_BRANCH}" \
             "${files[@]}"
           echo "已发布: $TAG"

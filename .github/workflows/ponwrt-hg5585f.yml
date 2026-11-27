@@ -178,32 +178,28 @@ jobs:
           echo "已注入文件："
           find files -type f | sort
 
-      - name: Install Feeds(装 feeds + 第三方包)
+      - name: Install Feeds(装 feeds)
         run: |
           cd "$OPENWRT"
-          # passwall / daed / ddns / autoreboot / autocore 都在 ponwrt 自带公共 feed。
-          # 只有 Footstrap 主题不在任何 feed，单独 clone 到 package/（参考 Kahen CI）。
+          # passwall / daed / ddns / autoreboot / Footstrap / autocore 全在 ponwrt 自带公共 feed：
+          #   luci-app-autoreboot   -> immortalwrt/luci applications
+          #   luci-theme-footstrap  -> immortalwrt/luci themes（上游已收录，Kahen 当年需手动 clone，
+          #                            现在 luci master 已自带，且它的 uci-default 对升级更安全，
+          #                            所以直接用 feed 版，不再手动 clone 避免重复包）
+          #   autocore              -> ponwrt 源码 package/emortal/autocore
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-          echo "--- 导入 Footstrap 主题 ---"
-          tmp="$(mktemp -d)"
-          git clone --depth=1 --single-branch --branch main \
-            https://github.com/VizzleTF/luci-theme-footstrap.git "$tmp/footstrap"
-          [ -f "$tmp/footstrap/luci-theme-footstrap/Makefile" ] \
-            || { echo "::error::luci-theme-footstrap Makefile 找不到，上游结构变了"; exit 1; }
-          rm -rf package/luci-theme-footstrap
-          cp -a "$tmp/footstrap/luci-theme-footstrap" package/luci-theme-footstrap
-          echo "Footstrap commit: $(git -C "$tmp/footstrap" rev-parse HEAD)"
-          rm -rf "$tmp"
-
-          # autoreboot 已在 immortalwrt/luci feed 里（feeds install -a 已收录），
-          # 这里确认它和 Footstrap 都进 feed，否则 defconfig 会静默丢掉这两个包。
-          for p in luci-app-autoreboot luci-theme-footstrap autocore; do
-            find package -maxdepth 4 -type d -name "$p" | grep -q . \
-              || { echo "::error::feeds/package 里找不到 $p"; exit 1; }
-            echo "  OK $p"
+          # 确认这几个包真被 feed 收录，否则 defconfig 会静默丢掉。
+          # feeds list -n 列的是 feed 里可用包（含符号链接安装的包），不受 -type d 限制。
+          for p in luci-app-autoreboot luci-theme-footstrap; do
+            ./scripts/feeds list -n | grep -qx "$p" \
+              || { echo "::error::feeds 里找不到 $p，检查上游 luci feed"; exit 1; }
+            echo "  OK(feed) $p"
           done
+          [ -f package/emortal/autocore/Makefile ] \
+            || { echo "::error::ponwrt 源码里找不到 autocore"; exit 1; }
+          echo "  OK(source) autocore"
 
       - name: Integrate Temperature(接入温度显示链路)
         run: |

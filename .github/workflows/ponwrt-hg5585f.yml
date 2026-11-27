@@ -28,7 +28,7 @@ on:
       extra_packages:
         description: '附加软件包（空格分隔；包名前加 - 表示移除）'
         required: false
-        default: 'luci-app-passwall luci-i18n-passwall-zh-cn daed daed-geoip daed-geosite luci-app-daed luci-i18n-daed-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts ddns-scripts-services ddns-scripts-aliyun ddns-scripts-dnspod-v3 ddns-scripts-cloudflare ddns-scripts-cnkuai ddns-scripts-huaweicloud luci-app-autoreboot luci-theme-footstrap autocore zram-swap kmod-zram'
+        default: 'luci-app-passwall luci-i18n-passwall-zh-cn daed daed-geoip daed-geosite luci-app-daed luci-i18n-daed-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts ddns-scripts-services ddns-scripts-aliyun ddns-scripts-dnspod-v3 ddns-scripts-cloudflare ddns-scripts-huaweicloud luci-app-autoreboot luci-theme-footstrap autocore zram-swap kmod-zram'
         type: string
       enable_bpf:
         description: '为 dae/daed 打开内核 BTF / BPF_EVENTS / XDP_SOCKETS。会额外编 dwarves(pahole)，约多 10-20 分钟'

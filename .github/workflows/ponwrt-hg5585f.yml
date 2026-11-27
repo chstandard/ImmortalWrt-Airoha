@@ -190,16 +190,9 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-          # 确认这几个包真被 feed 收录，否则 defconfig 会静默丢掉。
-          # feeds list -n 列的是 feed 里可用包（含符号链接安装的包），不受 -type d 限制。
-          for p in luci-app-autoreboot luci-theme-footstrap; do
-            ./scripts/feeds list -n | grep -qx "$p" \
-              || { echo "::error::feeds 里找不到 $p，检查上游 luci feed"; exit 1; }
-            echo "  OK(feed) $p"
-          done
-          [ -f package/emortal/autocore/Makefile ] \
-            || { echo "::error::ponwrt 源码里找不到 autocore"; exit 1; }
-          echo "  OK(source) autocore"
+          # 包是否真的可用由下一步 Make Defconfig 逐个 EXTRA_PACKAGES 校验（state 必须是 y/m）。
+          # 这里只打印一下来源，不另做脆弱的 grep（feeds list -n 会给未装包加 '-' 前缀）。
+          echo "luci-app-autoreboot / luci-theme-footstrap 来自 luci feed；autocore 来自 ponwrt 源码"
 
       - name: Integrate Temperature(接入温度显示链路)
         run: |
